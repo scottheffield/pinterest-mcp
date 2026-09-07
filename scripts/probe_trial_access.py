@@ -97,7 +97,7 @@ async def probe_board_delete(board_id: str) -> None:
 
 async def probe_analytics() -> None:
     c = PinterestClient()
-    end = dt.datetime.now(tz=dt.timezone.utc).date()
+    end = dt.datetime.now(tz=dt.UTC).date()
     start = end - dt.timedelta(days=29)
     try:
         await _call(
