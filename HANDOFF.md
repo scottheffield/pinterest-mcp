@@ -29,6 +29,32 @@ Trial-access status.
 Do **not** use the system Python. It is 3.10 and the project needs 3.11+. The
 venv is uv-managed CPython 3.12.12.
 
+## Traps that have already cost a session
+
+1. **Check `git log` before acting on a session brief.** A brief describing
+   phases 1 and 2 as not started arrived after both were committed. Read the
+   log and the code first, then work out what is genuinely open. The brief
+   describes intent, the repo describes state.
+
+2. **Line endings are mixed and there is no `.gitattributes`.**
+   `src/pinterest_mcp/*.py` and `docs/trial-access-findings.md` are **CRLF** in
+   git. `tests/*.py`, `README.md` and `HANDOFF.md` are **LF**. `core.autocrlf`
+   is `false`. Editing a CRLF file with a script that writes `newline="\n"`
+   rewrites every line and turns a 60-line change into a 1500-line diff. If a
+   diffstat looks absurd, this is why. Check with
+   `git show HEAD:<file> | file -` against `file <file>` before committing.
+
+3. **Never let a smoke test write real pin content.** A draft of the stdio
+   smoke test called `update_pin` with a new title on a real pin id. The Trial
+   gate would have blocked it, but the test must not depend on that. Use a pin
+   id that does not exist, such as `0`, so nothing real can change whatever the
+   API decides to do.
+
+4. **Reads are free enough to verify with, writes are not.** The Trial ceiling
+   is 1000 reads and 300 writes per day. Re-running the read probes to confirm
+   a claim costs nothing that matters. Prefer that over trusting a status
+   written down by an earlier session.
+
 ## The one thing to understand about this API
 
 The dividing line under Trial access is **boards versus pins**, not
