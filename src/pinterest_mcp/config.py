@@ -26,12 +26,30 @@ from dotenv import load_dotenv
 # would fail with an opaque 401 once the 30-day access token expired.
 #
 # Loaded before any os.environ read below. Real environment variables win
-# over .env values (override=False).
+# over .env values (override=False), and among the candidates the earlier one
+# wins for any key both define.
+#
+# Every candidate is loaded, not just the first that exists. An MCP client
+# launches this server with a working directory of its own choosing, which is
+# routinely some other project. If that directory happens to contain an
+# unrelated .env, stopping at it would leave PINTEREST_CLIENT_SECRET unset and
+# reintroduce exactly the day-30 refresh failure this block exists to prevent.
+#
+# Set PINTEREST_DOTENV to name a specific file and skip the search.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-for _candidate in (Path.cwd() / ".env", _REPO_ROOT / ".env"):
+_explicit = os.environ.get("PINTEREST_DOTENV")
+_candidates = (
+    [Path(_explicit).expanduser()]
+    if _explicit
+    else [
+        Path.cwd() / ".env",
+        _REPO_ROOT / ".env",
+        Path.home() / ".config" / "pinterest" / ".env",
+    ]
+)
+for _candidate in _candidates:
     if _candidate.is_file():
         load_dotenv(_candidate, override=False)
-        break
 
 # ---------------------------------------------------------------------------
 # Token storage

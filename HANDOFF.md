@@ -116,6 +116,51 @@ One new observation from the stdio smoke test: `PATCH /pins/0`, a pin id that
 does not exist, still returns the `pin_edit` 401 rather than a 404. The Trial
 gate is evaluated before the resource lookup.
 
+## Review pass: nine defects found and fixed
+
+A code review of the whole branch found nine real defects that the tests did
+not catch. All are fixed and covered now. Three could have cost the account.
+
+1. **A supplied access token was unusable.** `_token_expiry` stayed 0, so
+   `_ensure_token` treated a token given to the constructor or via
+   `PINTEREST_ACCESS_TOKEN` as already expired, then reported that no token
+   existed. `.env.template` documents that path, so it was broken as
+   documented.
+2. **The rotating refresh token could be spent twice.** `_refresh` was
+   unguarded and the MCP server dispatches tool calls concurrently. Two calls
+   on an expired token would both refresh, and the loser would persist a token
+   Pinterest had already invalidated. That is a full browser re-auth to
+   recover. Now serialised behind an `asyncio.Lock` with a double check.
+3. **`.env` discovery stopped at the first candidate.** An MCP client chooses
+   the working directory, often another project. If that directory had any
+   `.env`, the Pinterest one was never loaded and refresh would fail at day 30
+   with an opaque 401, the exact failure that block exists to prevent. Now
+   every candidate is loaded, earlier ones winning, with `PINTEREST_DOTENV` to
+   name one explicitly.
+4. **`_refresh` still called `raise_for_status()`**, discarding the response
+   body in the one place it matters most. A closed refresh window and a wrong
+   client secret were indistinguishable, and they have different fixes.
+5. **A token file created by a refresh was not chmodded.** `auth.save_token`
+   sets 0600; the refresh path left it at the default umask.
+6. **Sandbox mode was unreachable through the server.** `_get_client()` always
+   built a production client, while tool descriptions told the agent to
+   "construct the client with sandbox=True", which an agent driving MCP cannot
+   do. Now `PINTEREST_SANDBOX=1`.
+7. **The README claimed sandbox mode was "covered by unit tests".** It was not;
+   no test constructed a sandbox client. That claim violated this repo's own
+   evidence standard. Retracted, and real sandbox tests added.
+8. **`update_pin` with no fields sent an empty PATCH**, which came back as the
+   `pin_edit` gate and reported a Trial limitation for a caller mistake. Now
+   raises `ValueError` like `update_board`.
+9. **`get_related_keywords` sent `terms` as repeated query params** while every
+   other array in the client is comma-joined. Now comma-joined, and flagged in
+   the code as unverified for more than one term, since the recorded probe used
+   a single term where both encodings are identical.
+
+Suite is now 98 passing, 1 skipped. The skip is the 0600 permission check,
+which is POSIX-only and cannot run on this Windows machine, so **fix 5 is
+verified by code and test but has not actually executed here**.
+
 ## Open items, in priority order
 
 1. **Push the branch and open a PR.** Not done, deliberately, since nothing was

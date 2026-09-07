@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from typing import Any
 
 from mcp import types
@@ -20,10 +21,25 @@ app = Server("pinterest-mcp")
 _client: PinterestClient | None = None
 
 
+def _sandbox_requested() -> bool:
+    """Whether to route this server at the sandbox host.
+
+    Tool descriptions tell an agent that pin writes can be exercised against
+    the sandbox, but an agent driving this server over MCP cannot construct a
+    client for itself. Without this switch that advice was unfollowable, so the
+    host is chosen by environment at startup. Set PINTEREST_SANDBOX=1 and
+    supply PINTEREST_SANDBOX_TOKEN.
+    """
+    return os.environ.get("PINTEREST_SANDBOX", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _get_client() -> PinterestClient:
     global _client
     if _client is None:
-        _client = PinterestClient()
+        sandbox = _sandbox_requested()
+        if sandbox:
+            logger.info("PINTEREST_SANDBOX is set: routing at the sandbox host.")
+        _client = PinterestClient(sandbox=sandbox)
     return _client
 
 
@@ -39,8 +55,10 @@ async def list_tools() -> list[types.Tool]:
                 "TRIAL ACCESS: BLOCKED in production. Pinterest returns 403 code 29, "
                 "'Apps with Trial access may not create Pins in production'. Standard "
                 "access lifts this. A sandbox host does exist (api-sandbox.pinterest.com) "
-                "and does accept pin writes; construct the client with sandbox=True and a "
-                "PINTEREST_SANDBOX_TOKEN to use it. "
+                "and is expected to accept pin writes. To route this server there, "
+                "restart it with PINTEREST_SANDBOX=1 and PINTEREST_SANDBOX_TOKEN set. "
+                "That path has never been exercised against Pinterest, so treat it "
+                "as untested. "
                 "Use dry_run=true to validate the payload without any API call at all."
             ),
             inputSchema={

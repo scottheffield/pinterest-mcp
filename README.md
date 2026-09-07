@@ -69,12 +69,17 @@ then put it in `.env` as `PINTEREST_SANDBOX_TOKEN`.
 > sandbox rejects a production token with `401 code 2`. Everything else in that
 > column is read from Pinterest's endpoint metadata. **No sandbox call has ever
 > succeeded against this app**, because no sandbox token has ever been issued.
-> `PinterestClient(sandbox=True)` is wired and covered by unit tests, and is
-> **untested end to end**. Mark it verified only after a real call.
+> `PinterestClient(sandbox=True)` is wired, and **no call has ever been made
+> through it**. Mark it verified only after a real one.
 
-```python
-PinterestClient(sandbox=True)   # routes to the sandbox host
+To route the server at the sandbox host, set both of these before starting it:
+
+```bash
+PINTEREST_SANDBOX=1
+PINTEREST_SANDBOX_TOKEN=<token from the app's Configure tab, Sandbox environment>
 ```
+
+In library use, `PinterestClient(sandbox=True)` does the same thing.
 
 ---
 
@@ -239,7 +244,30 @@ created on demand, `chmod 600` where supported. Override with
 `PINTEREST_TOKEN_FILE`.
 
 Stored fields: `access_token`, `refresh_token`, `expiry`,
-`refresh_token_expiry`, `scope`, `updated_at`.
+`refresh_token_expiry`, `scope`, `updated_at`. The file is created mode `0600`
+whether it is written by the auth flow or by a later refresh.
+
+Setting `PINTEREST_ACCESS_TOKEN` takes precedence and suppresses reading this
+file, so unset it to go back to the stored token and automatic refresh.
+
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `PINTEREST_CLIENT_ID`, `PINTEREST_CLIENT_SECRET` | Required. Also needed after first auth, to refresh the token |
+| `PINTEREST_TOKEN_FILE` | Override the token path |
+| `PINTEREST_SCOPES` | Override the requested scopes |
+| `PINTEREST_REDIRECT_URI` | Override the OAuth callback |
+| `PINTEREST_SANDBOX` | `1` routes the server at the sandbox host. Untested |
+| `PINTEREST_SANDBOX_TOKEN` | The sandbox's own 24-hour token |
+| `PINTEREST_DOTENV` | Load this `.env` instead of searching |
+| `PINTEREST_ACCESS_TOKEN`, `PINTEREST_REFRESH_TOKEN` | Supply a token directly, bypassing the auth flow |
+
+`.env` is searched for in the working directory, then the repo root, then
+`~/.config/pinterest/.env`, and every one found is loaded, earlier files
+winning. An MCP client chooses the working directory it launches the server
+from, which is often another project entirely, so do not rely on the first
+location alone.
 
 Access tokens last 30 days. Refresh tokens are the continuous type: a 60-day
 window that rotates on every use and is refreshable indefinitely as long as it

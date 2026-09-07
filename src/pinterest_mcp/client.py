@@ -99,9 +99,21 @@ class PinterestClient:
         self.client_secret = client_secret or os.environ.get("PINTEREST_CLIENT_SECRET", "")
         self._access_token = access_token or os.environ.get("PINTEREST_ACCESS_TOKEN")
         self._refresh_token = refresh_token or os.environ.get("PINTEREST_REFRESH_TOKEN")
-        self._token_expiry: float = 0
+        # A token handed in directly carries no expiry with it. Treat it as
+        # valid and let Pinterest be the judge: a stale one returns 401, which
+        # surfaces as a PinterestAPIError naming the failure. Leaving this at 0
+        # made every explicitly supplied token unusable, because _ensure_token
+        # treated it as already expired and then reported that no token existed
+        # at all.
+        self._token_expiry: float = float("inf") if self._access_token else 0
         self._refresh_token_expiry: float | None = None
         self._pin_timestamps: list[float] = []
+        # Pinterest refresh tokens ROTATE: each use invalidates the previous
+        # one. The MCP server dispatches tool calls concurrently, so two calls
+        # arriving on an expired token would both refresh, and the loser would
+        # persist a token Pinterest had already invalidated. That locks the
+        # account out until a full browser re-auth. One refresh at a time.
+        self._refresh_lock = asyncio.Lock()
         self._http = httpx.AsyncClient(
             timeout=30.0,
             base_url=PINTEREST_SANDBOX_BASE if sandbox else PINTEREST_BASE,
@@ -110,7 +122,13 @@ class PinterestClient:
         if sandbox:
             # The sandbox rejects production OAuth tokens outright, so it uses
             # its own short-lived token and never touches the token file.
-            self._access_token = access_token or SANDBOX_TOKEN
+            # Read the env at construction, the same as the production token
+            # above. SANDBOX_TOKEN is the import-time snapshot and stays as a
+            # fallback; without this the two token sources resolved at
+            # different times, which is surprising and untestable.
+            self._access_token = (
+                access_token or os.environ.get("PINTEREST_SANDBOX_TOKEN") or SANDBOX_TOKEN
+            )
             self._token_expiry = float("inf") if self._access_token else 0
             if not self._access_token:
                 logger.warning(
@@ -118,7 +136,14 @@ class PinterestClient:
                     "Generate one in the Pinterest app Configure tab (Sandbox "
                     "environment). Sandbox tokens expire after 24 hours."
                 )
-        elif not self._access_token and TOKEN_FILE.exists():
+        elif self._access_token:
+            logger.info(
+                "Using the Pinterest access token supplied directly; the token "
+                "file at %s was not read. Unset PINTEREST_ACCESS_TOKEN to use "
+                "the stored token and automatic refresh instead.",
+                TOKEN_FILE,
+            )
+        elif TOKEN_FILE.exists():
             self._load_token_file()
 
     def _load_token_file(self) -> None:
@@ -163,6 +188,7 @@ class PinterestClient:
 
     def _save_token_file(self) -> None:
         path = ensure_token_dir()
+        existed = path.exists()
         path.write_text(
             json.dumps(
                 {
@@ -175,6 +201,14 @@ class PinterestClient:
                 indent=2,
             )
         )
+        if not existed:
+            # auth.save_token chmods the file it creates. A file first created
+            # by a refresh instead went in at the default umask, typically
+            # 0644, leaving a live OAuth token world-readable.
+            try:
+                os.chmod(path, 0o600)
+            except OSError as e:
+                logger.debug("Could not chmod token file: %s", e)
 
     async def _ensure_token(self) -> str:
         if self._access_token and time.time() < self._token_expiry - 60:
@@ -192,6 +226,13 @@ class PinterestClient:
         raise RuntimeError("No Pinterest access token. Run `pinterest-mcp-auth` to authenticate.")
 
     async def _refresh(self) -> None:
+        async with self._refresh_lock:
+            # Another coroutine may have refreshed while this one waited.
+            if self._access_token and time.time() < self._token_expiry - 60:
+                return
+            await self._refresh_locked()
+
+    async def _refresh_locked(self) -> None:
         resp = await self._http.post(
             PINTEREST_AUTH,
             data={
@@ -200,7 +241,12 @@ class PinterestClient:
             },
             auth=(self.client_id, self.client_secret),
         )
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            # raise_for_status() would discard the body, which is the only
+            # thing separating a closed refresh window from a bad client
+            # secret. That distinction decides whether the fix is a browser
+            # re-auth or a corrected .env.
+            raise PinterestAPIError(resp.status_code, "POST", PINTEREST_AUTH, resp.text)
         data = resp.json()
         self._access_token = data["access_token"]
         self._refresh_token = data.get("refresh_token", self._refresh_token)
@@ -278,7 +324,8 @@ class PinterestClient:
         Upstream's docstring claimed Pinterest has no sandbox environment.
         That is wrong: the sandbox is https://api-sandbox.pinterest.com and
         POST /pins is x-sandbox: enabled there. Construct the client with
-        sandbox=True and a PINTEREST_SANDBOX_TOKEN to exercise pin creation.
+        PINTEREST_SANDBOX=1 with a PINTEREST_SANDBOX_TOKEN to exercise pin
+        creation. That path is UNTESTED against Pinterest.
 
         ``dry_run=True`` validates inputs and returns the payload without
         calling the API at all.
@@ -328,8 +375,8 @@ class PinterestClient:
                     feature="Creating pins in production",
                     remedy=(
                         "Standard access is required. No pin was created. To create "
-                        "pins before then, use the sandbox host (sandbox=True) with a "
-                        "PINTEREST_SANDBOX_TOKEN."
+                        "pins before then, restart the server with PINTEREST_SANDBOX=1 "
+                        "and PINTEREST_SANDBOX_TOKEN set. That path is untested."
                     ),
                 ) from err
             raise
@@ -354,8 +401,9 @@ class PinterestClient:
             access to this restricted feature: pin_edit"}
 
         pins:write WAS granted, so this is a Trial-versus-Standard feature
-        gate, not a scope problem. Nothing was modified. Use sandbox=True to
-        exercise this call, or apply for Standard access.
+        gate, not a scope problem. Nothing was modified. To exercise this
+        call, run the server against the sandbox host by setting
+        PINTEREST_SANDBOX=1, or apply for Standard access.
         """
         payload: dict[str, Any] = {}
         if title is not None:
@@ -366,6 +414,11 @@ class PinterestClient:
             payload["link"] = link
         if board_id is not None:
             payload["board_id"] = board_id
+        if not payload:
+            # Matches update_board. Without this an empty PATCH goes out and
+            # comes back as the pin_edit gate, reporting a Trial limitation for
+            # what is really a caller mistake.
+            raise ValueError("Pass at least one of title, description, link, board_id")
         try:
             return await self._request("PATCH", f"/pins/{pin_id}", json=payload)
         except PinterestAPIError as err:
@@ -376,8 +429,8 @@ class PinterestClient:
                     remedy=(
                         "Standard access is required; the pins:write scope alone is not "
                         "enough and was already granted. Nothing was modified. To "
-                        "exercise pin edits before then, use the sandbox host "
-                        "(sandbox=True)."
+                        "exercise pin edits before then, restart the server with "
+                        "PINTEREST_SANDBOX=1. That path is untested."
                     ),
                 ) from err
             raise
@@ -392,7 +445,8 @@ class PinterestClient:
         no throwaway pin can be made. Given that create and edit are both
         gated, expect this to be blocked too, but that is an expectation,
         not a result. DELETE /pins/{pin_id} is x-sandbox: enabled, so test
-        it with sandbox=True.
+        it against the sandbox host (PINTEREST_SANDBOX=1), which is itself
+        untested.
         """
         return await self._request("DELETE", f"/pins/{pin_id}")
 
@@ -727,7 +781,12 @@ class PinterestClient:
         2026-09-07, but returned related_term_count: 0 for "printable
         calendar". Same caveat as get_suggested_keywords.
         """
-        return await self._request("GET", "/terms/related", params={"terms": terms})
+        # Comma-joined to match every other array parameter in this client.
+        # NOTE: the recorded probe passed a single term, where comma-joining
+        # and repeated params are byte-identical on the wire, so the MULTI-TERM
+        # encoding is UNVERIFIED against the live API. Check it before relying
+        # on more than one term.
+        return await self._request("GET", "/terms/related", params={"terms": ",".join(terms)})
 
     # ------------------------------------------------------------------
     # Top pins analytics
