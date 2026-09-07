@@ -275,6 +275,188 @@ async def list_tools() -> list[types.Tool]:
                 },
             },
         ),
+        types.Tool(
+            name="update_board",
+            description=(
+                "Rename a board, rewrite its description, or change privacy. Only "
+                "fields you pass are changed. TRIAL ACCESS: VERIFIED WORKING for "
+                "name and description; edits appear on the public profile. "
+                "privacy=SECRET returns 403 with current scopes; PUBLIC works."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "board_id": {"type": "string"},
+                    "name": {"type": "string", "description": "New board name"},
+                    "description": {
+                        "type": "string",
+                        "description": "Keyword-led board description",
+                    },
+                    "privacy": {"type": "string", "enum": ["PUBLIC", "SECRET"]},
+                },
+                "required": ["board_id"],
+            },
+        ),
+        types.Tool(
+            name="delete_board",
+            description=(
+                "Delete a board and every pin on it. Cannot be undone. "
+                "TRIAL ACCESS: VERIFIED WORKING."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {"board_id": {"type": "string"}},
+                "required": ["board_id"],
+            },
+        ),
+        types.Tool(
+            name="get_board",
+            description="Fetch one board by ID. TRIAL ACCESS: VERIFIED WORKING.",
+            inputSchema={
+                "type": "object",
+                "properties": {"board_id": {"type": "string"}},
+                "required": ["board_id"],
+            },
+        ),
+        types.Tool(
+            name="list_board_sections",
+            description="List sections of a board. TRIAL ACCESS: VERIFIED WORKING.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "board_id": {"type": "string"},
+                    "page_size": {"type": "integer", "default": 25},
+                },
+                "required": ["board_id"],
+            },
+        ),
+        types.Tool(
+            name="create_board_section",
+            description=(
+                "Create a section within a board. TRIAL ACCESS: VERIFIED WORKING. "
+                "One of the few writes Trial permits."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "board_id": {"type": "string"},
+                    "name": {"type": "string"},
+                },
+                "required": ["board_id", "name"],
+            },
+        ),
+        types.Tool(
+            name="delete_board_section",
+            description="Delete a board section. TRIAL ACCESS: VERIFIED WORKING.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "board_id": {"type": "string"},
+                    "section_id": {"type": "string"},
+                },
+                "required": ["board_id", "section_id"],
+            },
+        ),
+        types.Tool(
+            name="get_account_info",
+            description=(
+                "Account profile and counts: username, business name, followers, "
+                "board and pin counts, monthly_views. TRIAL ACCESS: VERIFIED "
+                "WORKING, returns real production data."
+            ),
+            inputSchema={"type": "object", "properties": {}},
+        ),
+        types.Tool(
+            name="get_pin",
+            description="Fetch one pin by ID. TRIAL ACCESS: VERIFIED WORKING.",
+            inputSchema={
+                "type": "object",
+                "properties": {"pin_id": {"type": "string"}},
+                "required": ["pin_id"],
+            },
+        ),
+        types.Tool(
+            name="list_pins",
+            description=(
+                "List pins on the account, paginated. Returns items plus a bookmark; "
+                "pass fetch_all=true to walk every page. TRIAL ACCESS: VERIFIED WORKING."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "page_size": {"type": "integer", "default": 25},
+                    "bookmark": {
+                        "type": "string",
+                        "description": "Cursor from a previous call",
+                    },
+                    "fetch_all": {"type": "boolean", "default": False},
+                    "pin_metrics": {"type": "boolean", "default": False},
+                },
+            },
+        ),
+        types.Tool(
+            name="get_suggested_keywords",
+            description=(
+                "Pinterest's suggested search terms for a seed term. Scope ads:read. "
+                "TRIAL ACCESS: reachable and returns 200, but data is THIN: it "
+                "returned only the input term for several tested seeds. An unhelpful "
+                "result is normal, not a bug. Prefer get_trending."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "term": {"type": "string"},
+                    "limit": {"type": "integer", "default": 10},
+                },
+                "required": ["term"],
+            },
+        ),
+        types.Tool(
+            name="get_related_keywords",
+            description=(
+                "Terms Pinterest considers related to the given terms. Scope ads:read. "
+                "TRIAL ACCESS: reachable, returns 200, but returned zero related terms "
+                "for the seed tested. Same caveat as get_suggested_keywords."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "terms": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["terms"],
+            },
+        ),
+        types.Tool(
+            name="get_top_pins_analytics",
+            description=(
+                "Rank the account pins by a metric over a date range. TRIAL ACCESS: "
+                "VERIFIED WORKING, returns real per-pin impressions. This was expected "
+                "to be inert under Trial and is not. Most useful analytics call "
+                "available: it says which specific pins earn impressions. Dates are "
+                "YYYY-MM-DD. Production only, not available in sandbox."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "start_date": {"type": "string", "description": "YYYY-MM-DD"},
+                    "end_date": {"type": "string", "description": "YYYY-MM-DD"},
+                    "sort_by": {
+                        "type": "string",
+                        "default": "IMPRESSION",
+                        "enum": [
+                            "ENGAGEMENT",
+                            "SAVE",
+                            "IMPRESSION",
+                            "OUTBOUND_CLICK",
+                            "PIN_CLICK",
+                        ],
+                    },
+                    "metrics": {"type": "array", "items": {"type": "string"}},
+                    "num_of_pins": {"type": "integer", "default": 10},
+                },
+                "required": ["start_date", "end_date"],
+            },
+        ),
     ]
 
 
@@ -321,6 +503,50 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
                 interests=arguments.get("interests"),
                 include_keywords=arguments.get("include_keywords"),
                 limit=arguments.get("limit", 50),
+            )
+        elif name == "update_board":
+            result = await client.update_board(**arguments)
+        elif name == "delete_board":
+            result = await client.delete_board(arguments["board_id"])
+        elif name == "get_board":
+            result = await client.get_board(arguments["board_id"])
+        elif name == "list_board_sections":
+            result = await client.list_board_sections(
+                board_id=arguments["board_id"],
+                page_size=arguments.get("page_size", 25),
+            )
+        elif name == "create_board_section":
+            result = await client.create_board_section(
+                board_id=arguments["board_id"], name=arguments["name"]
+            )
+        elif name == "delete_board_section":
+            result = await client.delete_board_section(
+                board_id=arguments["board_id"], section_id=arguments["section_id"]
+            )
+        elif name == "get_account_info":
+            result = await client.get_account_info()
+        elif name == "get_pin":
+            result = await client.get_pin(arguments["pin_id"])
+        elif name == "list_pins":
+            result = await client.list_pins(
+                page_size=arguments.get("page_size", 25),
+                bookmark=arguments.get("bookmark"),
+                fetch_all=arguments.get("fetch_all", False),
+                pin_metrics=arguments.get("pin_metrics", False),
+            )
+        elif name == "get_suggested_keywords":
+            result = await client.get_suggested_keywords(
+                term=arguments["term"], limit=arguments.get("limit", 10)
+            )
+        elif name == "get_related_keywords":
+            result = await client.get_related_keywords(terms=arguments["terms"])
+        elif name == "get_top_pins_analytics":
+            result = await client.get_top_pins_analytics(
+                start_date=arguments["start_date"],
+                end_date=arguments["end_date"],
+                sort_by=arguments.get("sort_by", "IMPRESSION"),
+                metrics=arguments.get("metrics"),
+                num_of_pins=arguments.get("num_of_pins", 10),
             )
         else:
             raise ValueError(f"Unknown tool: {name}")

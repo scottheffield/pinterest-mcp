@@ -60,6 +60,25 @@ PINTEREST_BASE = "https://api.pinterest.com/v5"
 PINTEREST_AUTH_URL = "https://www.pinterest.com/oauth/"
 PINTEREST_TOKEN_URL = "https://api.pinterest.com/v5/oauth/token"
 
+#: Pinterest's separate sandbox host. Verified 2026-09-07: production returns
+#: HTTP 403 code 29 on POST /pins under Trial access with the message
+#: "Apps with Trial access may not create Pins in production ... use API
+#: Sandbox https://api-sandbox.pinterest.com instead."
+#:
+#: The two hosts are complementary, not interchangeable:
+#:   production Trial - reads, board writes and analytics work, pin writes 403
+#:   sandbox          - full pin and board CRUD, but analytics and search are
+#:                      marked x-sandbox: disabled in Pinterest's OpenAPI spec
+#:
+#: The sandbox does NOT accept a production OAuth token (verified: HTTP 401
+#: code 2 "Authentication failed"). It needs its own token, generated in the
+#: Pinterest app's Configure tab by selecting the Sandbox environment. Those
+#: tokens expire after 24 hours.
+PINTEREST_SANDBOX_BASE = "https://api-sandbox.pinterest.com/v5"
+
+#: Sandbox token, if you have one. Set PINTEREST_SANDBOX_TOKEN in .env.
+SANDBOX_TOKEN = os.environ.get("PINTEREST_SANDBOX_TOKEN")
+
 #: Must match the redirect URI registered in the Pinterest app settings
 #: character for character, including the port and the trailing path.
 REDIRECT_URI = os.environ.get("PINTEREST_REDIRECT_URI", "http://localhost:8089/callback")

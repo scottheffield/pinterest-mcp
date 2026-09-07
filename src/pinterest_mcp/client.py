@@ -19,7 +19,9 @@ import httpx
 
 from .config import (
     PINTEREST_BASE,
+    PINTEREST_SANDBOX_BASE,
     REFRESH_WARN_DAYS,
+    SANDBOX_TOKEN,
     TOKEN_FILE,
     ensure_token_dir,
 )
@@ -61,7 +63,9 @@ class PinterestClient:
         client_secret: str | None = None,
         access_token: str | None = None,
         refresh_token: str | None = None,
+        sandbox: bool = False,
     ) -> None:
+        self.sandbox = sandbox
         self.client_id = client_id or os.environ.get("PINTEREST_CLIENT_ID", "")
         self.client_secret = client_secret or os.environ.get("PINTEREST_CLIENT_SECRET", "")
         self._access_token = access_token or os.environ.get("PINTEREST_ACCESS_TOKEN")
@@ -71,11 +75,21 @@ class PinterestClient:
         self._pin_timestamps: list[float] = []
         self._http = httpx.AsyncClient(
             timeout=30.0,
-            base_url=PINTEREST_BASE,
+            base_url=PINTEREST_SANDBOX_BASE if sandbox else PINTEREST_BASE,
             headers={"User-Agent": "pinterest-mcp/0.1.0"},
         )
-        # Try loading stored token
-        if not self._access_token and TOKEN_FILE.exists():
+        if sandbox:
+            # The sandbox rejects production OAuth tokens outright, so it uses
+            # its own short-lived token and never touches the token file.
+            self._access_token = access_token or SANDBOX_TOKEN
+            self._token_expiry = float("inf") if self._access_token else 0
+            if not self._access_token:
+                logger.warning(
+                    "Sandbox mode requested but PINTEREST_SANDBOX_TOKEN is not set. "
+                    "Generate one in the Pinterest app Configure tab (Sandbox "
+                    "environment). Sandbox tokens expire after 24 hours."
+                )
+        elif not self._access_token and TOKEN_FILE.exists():
             self._load_token_file()
 
     def _load_token_file(self) -> None:
@@ -136,6 +150,13 @@ class PinterestClient:
     async def _ensure_token(self) -> str:
         if self._access_token and time.time() < self._token_expiry - 60:
             return self._access_token
+        if self.sandbox:
+            raise RuntimeError(
+                "No sandbox token. Set PINTEREST_SANDBOX_TOKEN in .env. Generate "
+                "it in the Pinterest app Configure tab with environment set to "
+                "Sandbox. Sandbox tokens expire after 24 hours and cannot be "
+                "refreshed through the OAuth flow."
+            )
         if self._refresh_token:
             await self._refresh()
             return self._access_token  # type: ignore[return-value]
@@ -215,10 +236,23 @@ class PinterestClient:
         takes precedence if both are given (file is base64-encoded and sent
         directly, avoiding the need for a public CDN URL).
 
-        Pinterest has no sandbox environment. Use ``dry_run=True`` during
-        development to validate inputs without making a real API call — the
-        app runs in dev mode so only your own account can see posts anyway,
-        but dry_run gives a zero-side-effect test path.
+        Trial access: BLOCKED in production. VERIFIED on 2026-09-07, a real
+        call returned:
+
+            HTTP 403 {"code":29,"message":"Apps with Trial access may not
+            create Pins in production https://api.pinterest.com - use API
+            Sandbox https://api-sandbox.pinterest.com instead."}
+
+        This fails loudly. It does NOT silently create an invisible pin, so
+        the documented "Sandbox entities" warning does not apply here.
+
+        Upstream's docstring claimed Pinterest has no sandbox environment.
+        That is wrong: the sandbox is https://api-sandbox.pinterest.com and
+        POST /pins is x-sandbox: enabled there. Construct the client with
+        sandbox=True and a PINTEREST_SANDBOX_TOKEN to exercise pin creation.
+
+        ``dry_run=True`` validates inputs and returns the payload without
+        calling the API at all.
         """
         if not image_url and not image_path:
             raise ValueError("Either image_url or image_path must be provided")
@@ -266,6 +300,21 @@ class PinterestClient:
         link: str | None = None,
         board_id: str | None = None,
     ) -> dict[str, Any]:
+        """Edit an existing pin's title, description, link or board.
+
+        Endpoint: PATCH /pins/{pin_id}.
+        Scopes: boards:read, boards:write, pins:read, pins:write.
+
+        Trial access: BLOCKED. VERIFIED on 2026-09-07 with a no-op call that
+        wrote a pin's own description back to itself:
+
+            HTTP 401 {"code":3,"message":"Your application does not have
+            access to this restricted feature: pin_edit"}
+
+        pins:write WAS granted, so this is a Trial-versus-Standard feature
+        gate, not a scope problem. Nothing was modified. Use sandbox=True to
+        exercise this call, or apply for Standard access.
+        """
         payload: dict[str, Any] = {}
         if title is not None:
             payload["title"] = title
@@ -278,6 +327,17 @@ class PinterestClient:
         return await self._request("PATCH", f"/pins/{pin_id}", json=payload)
 
     async def delete_pin(self, pin_id: str) -> dict[str, Any]:
+        """Delete a pin permanently. This cannot be undone.
+
+        Endpoint: DELETE /pins/{pin_id}.
+
+        Trial access: UNTESTED against production. The only way to test it
+        there is to destroy a real pin, since Trial blocks pin creation so
+        no throwaway pin can be made. Given that create and edit are both
+        gated, expect this to be blocked too, but that is an expectation,
+        not a result. DELETE /pins/{pin_id} is x-sandbox: enabled, so test
+        it with sandbox=True.
+        """
         return await self._request("DELETE", f"/pins/{pin_id}")
 
     async def get_pin_analytics(
@@ -287,6 +347,17 @@ class PinterestClient:
         end_date: str,
         metrics: list[str] | None = None,
     ) -> dict[str, Any]:
+        """Impressions, saves and clicks for a single pin over a date range.
+
+        Endpoint: GET /pins/{pin_id}/analytics. Scopes: boards:read, pins:read.
+
+        Trial access: VERIFIED WORKING on 2026-09-07. Returns real daily
+        metrics with data_status READY.
+
+        Endpoint is x-sandbox: disabled, so production only. The related
+        multi-pin endpoint GET /pins/analytics is blocked under Trial with
+        HTTP 401 code 3, "restricted feature".
+        """
         if metrics is None:
             metrics = ["IMPRESSION", "SAVE", "PIN_CLICK", "OUTBOUND_CLICK", "ENGAGEMENT"]
         params = {
@@ -348,11 +419,120 @@ class PinterestClient:
         )
         return data.get("items", [])
 
+    async def update_board(
+        self,
+        board_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        privacy: str | None = None,
+    ) -> dict[str, Any]:
+        """Rename a board, rewrite its description, or change its privacy.
+
+        Endpoint: PATCH /boards/{board_id}. Scopes: boards:read, boards:write.
+        Only the fields you pass are changed.
+
+        Trial access: VERIFIED WORKING for name and description on
+        2026-09-07. Both persisted and the rename appeared on the public
+        profile in an unauthenticated fetch, so board edits are NOT
+        sandboxed.
+
+        One exception: privacy="SECRET" returns HTTP 403 code 29 with the
+        current scope set. privacy="PUBLIC" succeeds. The most likely cause
+        is the missing boards:write_secret scope rather than a Trial limit,
+        but that is unproven.
+        """
+        payload: dict[str, Any] = {}
+        if name is not None:
+            payload["name"] = name
+        if description is not None:
+            payload["description"] = description
+        if privacy is not None:
+            payload["privacy"] = privacy
+        if not payload:
+            raise ValueError("Pass at least one of name, description, privacy")
+        return await self._request("PATCH", f"/boards/{board_id}", json=payload)
+
+    async def delete_board(self, board_id: str) -> dict[str, Any]:
+        """Delete a board and every pin on it. This cannot be undone.
+
+        Endpoint: DELETE /boards/{board_id}. Scopes: boards:read, boards:write.
+
+        Trial access: VERIFIED WORKING on 2026-09-07. Returned 204, and a
+        follow-up read returned {"code":40,"message":"Board not found."}.
+        The board also disappeared from the public profile.
+        """
+        return await self._request("DELETE", f"/boards/{board_id}")
+
+    async def get_board(self, board_id: str) -> dict[str, Any]:
+        """Fetch one board by ID.
+
+        Endpoint: GET /boards/{board_id}. Scope: boards:read.
+        Trial access: VERIFIED WORKING on 2026-09-07.
+        """
+        return await self._request("GET", f"/boards/{board_id}")
+
+    async def list_board_sections(self, board_id: str, page_size: int = 25) -> list[dict[str, Any]]:
+        """List the sections of a board.
+
+        Endpoint: GET /boards/{board_id}/sections. Scope: boards:read.
+        Trial access: VERIFIED WORKING on 2026-09-07.
+        """
+        data = await self._request(
+            "GET", f"/boards/{board_id}/sections", params={"page_size": page_size}
+        )
+        return data.get("items", [])
+
+    async def create_board_section(self, board_id: str, name: str) -> dict[str, Any]:
+        """Create a section within a board.
+
+        Endpoint: POST /boards/{board_id}/sections. Scopes: boards:read, boards:write.
+
+        Trial access: VERIFIED WORKING on 2026-09-07. This is a board-side
+        write that Trial permits, unlike anything pin-side.
+        """
+        return await self._request("POST", f"/boards/{board_id}/sections", json={"name": name})
+
+    async def delete_board_section(self, board_id: str, section_id: str) -> dict[str, Any]:
+        """Delete a board section.
+
+        Endpoint: DELETE /boards/{board_id}/sections/{section_id}.
+        Trial access: VERIFIED WORKING on 2026-09-07.
+        """
+        return await self._request("DELETE", f"/boards/{board_id}/sections/{section_id}")
+
+    # ------------------------------------------------------------------
+    # Account
+    # ------------------------------------------------------------------
+
+    async def get_account_info(self) -> dict[str, Any]:
+        """Fetch the authenticated account's profile and counts.
+
+        Endpoint: GET /user_account. Scope: user_accounts:read.
+        Returns username, business name, follower/board/pin counts and
+        monthly_views.
+
+        Trial access: VERIFIED WORKING on 2026-09-07, returning real
+        production data, not sandbox data.
+        """
+        return await self._request("GET", "/user_account")
+
     # ------------------------------------------------------------------
     # Search
     # ------------------------------------------------------------------
 
     async def search_pins(self, query: str, page_size: int = 25) -> list[dict[str, Any]]:
+        """Search the ACCOUNT'S OWN pins by keyword, not public Pinterest.
+
+        Endpoint: GET /search/pins (operationId search_user_pins/list).
+        Scopes: boards:read, boards:read_secret, pins:read, pins:read_secret.
+        The two _secret scopes are mandatory here even for public pins.
+
+        Trial access: VERIFIED WORKING on 2026-09-07.
+
+        The name is misleading: this does not search Pinterest at large, it
+        searches the authenticated user's pins. x-sandbox: disabled, so
+        production only.
+        """
         data = await self._request(
             "GET",
             "/search/pins",
@@ -415,6 +595,122 @@ class PinterestClient:
             "GET",
             f"/trends/keywords/{region}/top/{trend_type}",
             params=params,
+        )
+
+    async def get_pin(self, pin_id: str) -> dict[str, Any]:
+        """Fetch one pin by ID.
+
+        Endpoint: GET /pins/{pin_id}. Scopes: boards:read, pins:read.
+        Trial access: VERIFIED WORKING on 2026-09-07.
+        """
+        return await self._request("GET", f"/pins/{pin_id}")
+
+    async def list_pins(
+        self,
+        page_size: int = 25,
+        bookmark: str | None = None,
+        fetch_all: bool = False,
+        pin_metrics: bool = False,
+    ) -> dict[str, Any]:
+        """List pins on the account, with pagination.
+
+        Endpoint: GET /pins. Scopes: boards:read, pins:read.
+
+        Returns {"items": [...], "bookmark": str | None}. Pass the bookmark
+        back to get the next page, or set fetch_all=True to walk every page
+        and return the combined list with bookmark=None.
+
+        Trial access: VERIFIED WORKING on 2026-09-07, returning real
+        production pins.
+        """
+        params: dict[str, Any] = {"page_size": page_size}
+        if pin_metrics:
+            params["pin_metrics"] = True
+        if not fetch_all:
+            if bookmark:
+                params["bookmark"] = bookmark
+            return await self._request("GET", "/pins", params=params)
+
+        items: list[dict[str, Any]] = []
+        cursor = bookmark
+        while True:
+            if cursor:
+                params["bookmark"] = cursor
+            page = await self._request("GET", "/pins", params=params)
+            items.extend(page.get("items", []))
+            cursor = page.get("bookmark")
+            if not cursor:
+                break
+        return {"items": items, "bookmark": None}
+
+    # ------------------------------------------------------------------
+    # Keyword research
+    # ------------------------------------------------------------------
+
+    async def get_suggested_keywords(self, term: str, limit: int = 10) -> list[str]:
+        """Get Pinterest's suggested search terms for a seed term.
+
+        Endpoint: GET /terms/suggested. Scope: ads:read.
+
+        Trial access: reachable and returns HTTP 200, VERIFIED on
+        2026-09-07. Be warned that the data is thin: for "printable
+        calendar", "calendar", "chore chart" and "graph paper" it returned
+        only the input term itself and nothing else. Treat an unhelpful
+        result as normal rather than as a bug. get_trending is the more
+        useful keyword tool for this account.
+        """
+        data = await self._request("GET", "/terms/suggested", params={"term": term, "limit": limit})
+        return data if isinstance(data, list) else data.get("items", [])
+
+    async def get_related_keywords(self, terms: list[str]) -> dict[str, Any]:
+        """Get terms Pinterest considers related to the given terms.
+
+        Endpoint: GET /terms/related. Scope: ads:read.
+
+        Trial access: reachable and returns HTTP 200, VERIFIED on
+        2026-09-07, but returned related_term_count: 0 for "printable
+        calendar". Same caveat as get_suggested_keywords.
+        """
+        return await self._request("GET", "/terms/related", params={"terms": terms})
+
+    # ------------------------------------------------------------------
+    # Top pins analytics
+    # ------------------------------------------------------------------
+
+    async def get_top_pins_analytics(
+        self,
+        start_date: str,
+        end_date: str,
+        sort_by: str = "IMPRESSION",
+        metrics: list[str] | None = None,
+        num_of_pins: int = 10,
+    ) -> dict[str, Any]:
+        """Rank the account's pins by a metric over a date range.
+
+        Endpoint: GET /user_account/analytics/top_pins.
+        Scopes: pins:read, user_accounts:read.
+        sort_by is one of ENGAGEMENT, SAVE, IMPRESSION, OUTBOUND_CLICK, PIN_CLICK.
+
+        Trial access: VERIFIED WORKING on 2026-09-07, returning real
+        per-pin impressions. This was expected to be inert under Trial and
+        is not. It is the most useful analytics call available, because it
+        says which specific pins are earning impressions.
+
+        Note this endpoint is x-sandbox: disabled, so it works ONLY against
+        production, not the sandbox host.
+        """
+        if metrics is None:
+            metrics = [sort_by]
+        return await self._request(
+            "GET",
+            "/user_account/analytics/top_pins",
+            params={
+                "start_date": start_date,
+                "end_date": end_date,
+                "sort_by": sort_by,
+                "metric_types": ",".join(metrics),
+                "num_of_pins": num_of_pins,
+            },
         )
 
     async def aclose(self) -> None:
