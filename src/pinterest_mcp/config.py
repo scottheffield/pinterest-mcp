@@ -14,6 +14,25 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+# ---------------------------------------------------------------------------
+# .env loading
+# ---------------------------------------------------------------------------
+# python-dotenv was a declared dependency upstream but was never called, so
+# .env was silently ignored. That mattered beyond first-run convenience:
+# PinterestClient reads PINTEREST_CLIENT_ID and PINTEREST_CLIENT_SECRET from
+# the environment to refresh the access token, so without this the refresh
+# would fail with an opaque 401 once the 30-day access token expired.
+#
+# Loaded before any os.environ read below. Real environment variables win
+# over .env values (override=False).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+for _candidate in (Path.cwd() / ".env", _REPO_ROOT / ".env"):
+    if _candidate.is_file():
+        load_dotenv(_candidate, override=False)
+        break
+
 # ---------------------------------------------------------------------------
 # Token storage
 # ---------------------------------------------------------------------------
