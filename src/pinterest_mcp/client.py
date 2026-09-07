@@ -49,6 +49,35 @@ class PinterestAPIError(RuntimeError):
         super().__init__(f"HTTP {status_code} on {method} {path}: {body}")
 
 
+class TrialAccessError(PinterestAPIError):
+    """A call was refused because the app has Trial access, not Standard.
+
+    Pinterest signals these refusals in the response body rather than by
+    status code alone, and the status codes are inconsistent (401 for
+    pin_edit, 403 for pin creation). Raising a distinct type keeps the
+    "apply for Standard access" advice in one place instead of leaving an
+    agent to interpret a raw HTTP error.
+    """
+
+    def __init__(self, err: PinterestAPIError, feature: str, remedy: str) -> None:
+        self.feature = feature
+        RuntimeError.__init__(
+            self,
+            f"{feature} is not available to this app under Pinterest Trial access. "
+            f"{remedy} Pinterest returned HTTP {err.status_code} on {err.method} "
+            f"{err.path}: {err.body}",
+        )
+        self.status_code = err.status_code
+        self.method = err.method
+        self.path = err.path
+        self.body = err.body
+
+
+# Substrings Pinterest uses to name a Trial-versus-Standard feature gate.
+_PIN_EDIT_GATE = "pin_edit"
+_PIN_CREATE_GATE = "may not create Pins in production"
+
+
 # Rate limit: 10 pins/minute
 _PIN_RATE_LIMIT = 10
 _PIN_RATE_WINDOW = 60.0
@@ -232,7 +261,7 @@ class PinterestClient:
         """Create a Pinterest pin.
 
         Either ``image_url`` (remote) or ``image_path`` (local file) must be
-        supplied — a pin cannot be created without an image. ``image_path``
+        supplied. A pin cannot be created without an image. ``image_path``
         takes precedence if both are given (file is base64-encoded and sent
         directly, avoiding the need for a public CDN URL).
 
@@ -290,7 +319,20 @@ class PinterestClient:
                 "link": link,
             }
 
-        return await self._rate_limited_pin(payload)
+        try:
+            return await self._rate_limited_pin(payload)
+        except PinterestAPIError as err:
+            if _PIN_CREATE_GATE in err.body:
+                raise TrialAccessError(
+                    err,
+                    feature="Creating pins in production",
+                    remedy=(
+                        "Standard access is required. No pin was created. To create "
+                        "pins before then, use the sandbox host (sandbox=True) with a "
+                        "PINTEREST_SANDBOX_TOKEN."
+                    ),
+                ) from err
+            raise
 
     async def update_pin(
         self,
@@ -324,7 +366,21 @@ class PinterestClient:
             payload["link"] = link
         if board_id is not None:
             payload["board_id"] = board_id
-        return await self._request("PATCH", f"/pins/{pin_id}", json=payload)
+        try:
+            return await self._request("PATCH", f"/pins/{pin_id}", json=payload)
+        except PinterestAPIError as err:
+            if _PIN_EDIT_GATE in err.body:
+                raise TrialAccessError(
+                    err,
+                    feature="Editing pins (pin_edit)",
+                    remedy=(
+                        "Standard access is required; the pins:write scope alone is not "
+                        "enough and was already granted. Nothing was modified. To "
+                        "exercise pin edits before then, use the sandbox host "
+                        "(sandbox=True)."
+                    ),
+                ) from err
+            raise
 
     async def delete_pin(self, pin_id: str) -> dict[str, Any]:
         """Delete a pin permanently. This cannot be undone.

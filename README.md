@@ -46,16 +46,24 @@ The hosts are complementary, not interchangeable:
 
 | | Production (`api.pinterest.com`) | Sandbox (`api-sandbox.pinterest.com`) |
 |---|---|---|
-| Reads | Real data | Isolated test data |
-| Board CRUD | Works | Works |
-| **Pin CRUD** | **Blocked under Trial** | **Works** |
-| **Analytics** | **Works** | **`x-sandbox: disabled`** |
-| Search | Works | `x-sandbox: disabled` |
+| Reads | ✅ Real data | ❓ Isolated test data |
+| Board CRUD | ✅ Works | ❓ Expected to work |
+| **Pin CRUD** | ❌ **Blocked under Trial** | ❓ **Expected to work** |
+| **Analytics** | ✅ **Works** | ❌ **`x-sandbox: disabled`** |
+| Search | ✅ Works | ❌ `x-sandbox: disabled` |
 | Auth | OAuth token, 30 days | Separate token, **24 hours** |
 
 The sandbox rejects production OAuth tokens outright (`401 code 2`). Generate a
 sandbox token in your app's Configure tab with the environment set to Sandbox,
 then put it in `.env` as `PINTEREST_SANDBOX_TOKEN`.
+
+> **The sandbox column is not verified.** Two things about it were observed
+> directly: the production `403` quoted above names the sandbox host, and the
+> sandbox rejects a production token with `401 code 2`. Everything else in that
+> column is read from Pinterest's endpoint metadata. **No sandbox call has ever
+> succeeded against this app**, because no sandbox token has ever been issued.
+> `PinterestClient(sandbox=True)` is wired and covered by unit tests, and is
+> **untested end to end**. Mark it verified only after a real call.
 
 ```python
 PinterestClient(sandbox=True)   # routes to the sandbox host
@@ -126,6 +134,14 @@ keyword tool.
 `pins:write` **was granted**. These are Trial-versus-Standard feature gates, not
 scope problems. Both fail loudly rather than silently sandboxing.
 
+`create_pin` and `update_pin` translate their gate responses into a
+`TrialAccessError` that names Standard access as the requirement and states
+that nothing was created or modified, instead of surfacing a raw HTTP error.
+The original status, path and response body are preserved on the exception.
+Any other error, a `404` for instance, passes through unchanged rather than
+being mislabelled as a Trial limit. Use `create_pin(dry_run=true)` to validate
+a payload without calling the API at all.
+
 `delete_pin` is untested because the only way to test it in production is to
 destroy a real pin, and Trial blocks pin creation so no throwaway pin can be
 made. Both are `x-sandbox: enabled`, so test them against the sandbox host.
@@ -134,7 +150,8 @@ made. Both are `x-sandbox: enabled`, so test them against the sandbox host.
 
 ## What changed from upstream
 
-Seven defects, four found by reading and three by running:
+Nine defects. Four were found by reading, three by running the server, and
+two by auditing what the tool list actually exposes:
 
 1. **`auth.py` imported `aiohttp`, which was never a declared dependency.** A
    clean install died on `ImportError`. Rewritten on stdlib `http.server`; the
@@ -159,6 +176,19 @@ Seven defects, four found by reading and three by running:
    response body, which is where Pinterest puts the useful part. Errors now
    raise `PinterestAPIError` carrying status, method, path and body. Every Trial
    finding in this README depends on that change.
+
+8. **`dry_run_pin` was handled but never advertised.** `call_tool` had a
+   branch for it and `list_tools` did not, so no client could ever reach it.
+   The branch is deleted rather than advertised, because `create_pin` already
+   takes a `dry_run` flag and a second tool for it was redundant. A test now
+   asserts that the set of tools in `list_tools` and the set dispatched in
+   `call_tool` are identical in both directions, so this class of bug cannot
+   come back quietly.
+9. **Eleven inherited tool descriptions stated no Trial status**, and two
+   stated something false: `search_pins` claimed to search public Pinterest,
+   and `create_pin` repeated upstream's claim that Pinterest has no sandbox.
+   Every tool description now carries its verified Trial status, and a test
+   enforces that.
 
 Plus 12 new tools and sandbox host support.
 
@@ -278,6 +308,11 @@ pytest
 `scripts/probe_trial_access.py` re-runs the access probes in stages, so the
 board-visibility check can happen in a logged-out browser between the create and
 the delete. It prints raw responses only.
+
+The suite is offline; every HTTP call is mocked. `tests/test_tool_registry.py`
+is the one to keep green when adding a tool: it fails if a tool is advertised
+without a dispatch branch, dispatched without being advertised, advertised
+without a client method, or described without a Trial-access status.
 
 ---
 

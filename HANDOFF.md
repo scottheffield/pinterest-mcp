@@ -4,8 +4,10 @@ State as of 2026-09-07. Read this before touching the repo.
 
 ## Where things stand
 
-Branch `phase-0-trial-fixes`, 7 commits, working tree clean, **nothing pushed**.
-Phases 0, 1 and 2 are complete. `main` is untouched at upstream's `c78c1f7`.
+Branch `phase-0-trial-fixes`, working tree clean, **nothing pushed**.
+Phases 0, 1 and 2 are complete, plus a follow-up pass that closed the review
+defects listed under "What changed in the follow-up pass" below. `main` is
+untouched at upstream's `c78c1f7`.
 
 Account is exactly as found: **8 boards, 27 pins**. Every test artifact created
 during probing was deleted and verified gone.
@@ -14,9 +16,15 @@ during probing was deleted and verified gone.
 
 ```bash
 cd C:\Users\scott\Results-Oriented\pinterest-mcp
-.venv\Scripts\python.exe -m pytest -q          # 14 tests, should pass
-.venv\Scripts\python.exe -c "import asyncio; from pinterest_mcp import server; print(len(asyncio.run(server.list_tools())))"   # 23
+uv run pytest -q            # 77 tests, should pass
+uv run ruff check src tests scripts
+uv run python -c "import asyncio; from pinterest_mcp import server; print(len(asyncio.run(server.list_tools())))"   # 23
 ```
+
+`tests/test_tool_registry.py` is the one that matters when adding a tool. It
+fails if a tool is advertised without a dispatch branch, dispatched without
+being advertised, advertised without a client method, or described without a
+Trial-access status.
 
 Do **not** use the system Python. It is 3.10 and the project needs 3.11+. The
 venv is uv-managed CPython 3.12.12.
@@ -33,9 +41,13 @@ sandbox versus production.
 Full evidence with raw responses: [docs/trial-access-findings.md](docs/trial-access-findings.md).
 Per-tool status table: [README.md](README.md).
 
-Two hosts exist and you need both. Upstream's claim that Pinterest has no
-sandbox is wrong. `https://api-sandbox.pinterest.com` does pin CRUD but has
-analytics and search disabled; production does analytics but blocks pin writes.
+Two hosts exist. Upstream's claim that Pinterest has no sandbox is wrong:
+Pinterest's own 403 on a production pin create names
+`https://api-sandbox.pinterest.com`. Production does analytics and search but
+blocks pin writes. The sandbox is expected to be the mirror image, pin CRUD
+but no analytics or search, and that expectation is read from endpoint
+metadata, NOT from a call. No sandbox call has ever succeeded here. See open
+item 3.
 
 ## Credentials
 
@@ -46,6 +58,37 @@ analytics and search disabled; production does analytics but blocks pin writes.
   If that window closes, the only recovery is a full browser re-auth.
 - Scan every staged diff for secrets before committing. Every commit so far was
   scanned.
+
+## What changed in the follow-up pass
+
+All verified: 77 tests pass, `ruff check` and `ruff format --check` are clean,
+and the server was driven end to end over real MCP stdio through the console
+script the README config points at.
+
+1. **`dry_run_pin` is gone.** It had a `call_tool` branch and no `list_tools`
+   entry, so no client could ever reach it. Deleted rather than advertised,
+   because `create_pin` already takes a `dry_run` flag. `tests/test_tool_registry.py`
+   now fails if the two sets ever diverge again, in either direction.
+2. **Pin gates return an explanation, not a raw HTTP error.** `update_pin` and
+   `create_pin` translate the `pin_edit` 401 and the production-create 403 into
+   a `TrialAccessError` naming Standard access and stating that nothing was
+   changed. Status, path and body are preserved on the exception. Unrelated
+   errors, a 404 for instance, pass through untouched.
+3. **Eleven inherited tool descriptions carried no Trial status**, and two were
+   false: `search_pins` claimed to search public Pinterest, and `create_pin`
+   repeated upstream's "Pinterest has no sandbox" claim. All 23 now state their
+   verified status, enforced by a test.
+4. **`docs/trial-access-findings.md` was stale.** It still listed pin creation
+   and both analytics endpoints as Untested, while the README described them as
+   settled. Added probe e (the production pin-create 403 and the two-host
+   split) and probe f (analytics re-verified live today).
+5. **The README overstated the sandbox.** Its two-host table marked sandbox pin
+   CRUD as working. No sandbox call has ever succeeded. That column is now
+   marked expected rather than verified, with the caveat spelled out.
+
+One new observation from the stdio smoke test: `PATCH /pins/0`, a pin id that
+does not exist, still returns the `pin_edit` 401 rather than a 404. The Trial
+gate is evaluated before the resource lookup.
 
 ## Open items, in priority order
 
@@ -107,3 +150,5 @@ Found while probing. Not acted on.
 | `scripts/probe_trial_access.py` | Staged access probes, raw output only |
 | `docs/trial-access-findings.md` | Raw evidence for every claim in the README |
 | `tests/test_token_storage.py` | New. Token path, refresh window, warning thresholds |
+| `tests/test_phase1_tools.py` | New. Phase 1 tools plus the Trial-gate translation, with verbatim live error bodies |
+| `tests/test_tool_registry.py` | New. Guards client method / list_tools / call_tool parity and Trial-status coverage |

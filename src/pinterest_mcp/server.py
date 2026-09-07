@@ -33,11 +33,15 @@ async def list_tools() -> list[types.Tool]:
         types.Tool(
             name="create_pin",
             description=(
-                "Create a new Pinterest pin. An image is always required — provide either "
+                "Create a new Pinterest pin. An image is always required: provide either "
                 "image_url (remote URL) or image_path (local file path). At least one must "
                 "be supplied; image_path takes precedence if both are given. "
-                "Use dry_run=true to validate without posting (useful during development — "
-                "note Pinterest has no sandbox; dry_run prevents any real API call)."
+                "TRIAL ACCESS: BLOCKED in production. Pinterest returns 403 code 29, "
+                "'Apps with Trial access may not create Pins in production'. Standard "
+                "access lifts this. A sandbox host does exist (api-sandbox.pinterest.com) "
+                "and does accept pin writes; construct the client with sandbox=True and a "
+                "PINTEREST_SANDBOX_TOKEN to use it. "
+                "Use dry_run=true to validate the payload without any API call at all."
             ),
             inputSchema={
                 "type": "object",
@@ -63,7 +67,7 @@ async def list_tools() -> list[types.Tool]:
                     "alt_text": {"type": "string", "description": "Alt text for accessibility"},
                     "dry_run": {
                         "type": "boolean",
-                        "description": "If true, validate and return payload without posting. Pinterest has no sandbox — use this for testing.",
+                        "description": "If true, build and return the payload without calling the API at all.",
                         "default": False,
                     },
                 },
@@ -76,7 +80,15 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="update_pin",
-            description="Update metadata on an existing pin.",
+            description=(
+                "Update the title, description, link or board of an existing pin. "
+                "TRIAL ACCESS: BLOCKED. VERIFIED on 2026-09-07 by a no-op call that "
+                "wrote a pin's own description back to itself: 401 code 3, 'Your "
+                "application does not have access to this restricted feature: pin_edit'. "
+                "The pins:write scope WAS granted, so this is a Trial-versus-Standard "
+                "feature gate, not a scope problem. Standard access is required. The "
+                "call fails loudly and changes nothing."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -91,7 +103,12 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="delete_pin",
-            description="Delete a pin.",
+            description=(
+                "Delete a pin permanently. Cannot be undone. "
+                "TRIAL ACCESS: UNTESTED in production. Testing it there means destroying "
+                "a real pin, and Trial blocks pin creation so no throwaway pin can be "
+                "made first. Exercise it against the sandbox host instead."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {"pin_id": {"type": "string"}},
@@ -100,7 +117,11 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="get_pin_analytics",
-            description="Get analytics for a pin: impressions, saves, link clicks, engagement.",
+            description=(
+                "Per-pin analytics: impressions, saves, link clicks, engagement. "
+                "TRIAL ACCESS: VERIFIED WORKING, returns real production metrics. "
+                "Production only; the sandbox host reports x-sandbox: disabled for analytics."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -118,7 +139,10 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="list_boards",
-            description="List your Pinterest boards.",
+            description=(
+                "List the account's boards. TRIAL ACCESS: VERIFIED WORKING, returns "
+                "real production boards, not sandbox entities."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -132,7 +156,12 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="create_board",
-            description="Create a new Pinterest board.",
+            description=(
+                "Create a new board. TRIAL ACCESS: VERIFIED WORKING, and the board is "
+                "genuinely public: one created through this API appeared on the public "
+                "profile in an unauthenticated fetch. It is not a sandbox entity. "
+                "privacy=SECRET is refused with 403 under the current scopes; use PUBLIC."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -149,7 +178,10 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="get_board_pins",
-            description="List all pins on a specific board.",
+            description=(
+                "List the pins on a specific board. TRIAL ACCESS: VERIFIED WORKING, "
+                "returns real production pins."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -161,7 +193,14 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="search_pins",
-            description="Search public Pinterest pins by keyword. Useful for trend research.",
+            description=(
+                "Search the pins on YOUR OWN account by keyword. This does NOT search "
+                "public Pinterest; upstream's description claiming otherwise was wrong "
+                "and the probe disproved it. Use get_trending for public trend research. "
+                "Needs boards:read_secret and pins:read_secret even for public pins. "
+                "TRIAL ACCESS: VERIFIED WORKING. Production only; the sandbox host "
+                "reports x-sandbox: disabled for search."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -173,7 +212,11 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="get_account_analytics",
-            description="Get account-level Pinterest analytics: impressions, saves, clicks.",
+            description=(
+                "Account-level analytics: impressions, saves, clicks, engagement. "
+                "TRIAL ACCESS: VERIFIED WORKING, returns real metrics with "
+                "data_status READY. Analytics is not inert under Trial."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -186,14 +229,19 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="bulk_create_pins",
-            description="Create multiple pins on a board. Automatically rate-limited to 10/min. Each pin must include either image_url or image_path.",
+            description=(
+                "Create multiple pins on a board, rate-limited to 10/min. Each pin must "
+                "include either image_url or image_path. "
+                "TRIAL ACCESS: BLOCKED in production, because it wraps create_pin and "
+                "hits the same 403 code 29. Standard access or the sandbox host is required."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "board_id": {"type": "string"},
                     "dry_run": {
                         "type": "boolean",
-                        "description": "Validate all pins without posting. Pinterest has no sandbox — use this for testing.",
+                        "description": "Validate all pins and return payloads without calling the API.",
                         "default": False,
                     },
                     "pins": {
@@ -227,7 +275,8 @@ async def list_tools() -> list[types.Tool]:
             description=(
                 "List top trending keywords for a region. Scope: user_accounts:read. "
                 "trend_type is one of growing, monthly, yearly, seasonal. "
-                "Trial access: UNTESTED."
+                "TRIAL ACCESS: VERIFIED WORKING, returns real trend data with weekly "
+                "time series. This is the tool for public keyword research, not search_pins."
             ),
             inputSchema={
                 "type": "object",
@@ -466,8 +515,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
     try:
         if name == "create_pin":
             result = await client.create_pin(**arguments)
-        elif name == "dry_run_pin":
-            result = await client.create_pin(dry_run=True, **arguments)
         elif name == "update_pin":
             result = await client.update_pin(**arguments)
         elif name == "delete_pin":

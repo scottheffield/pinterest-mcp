@@ -125,6 +125,80 @@ editing, at least, the failure is loud, not silent. Whether `POST /pins`
 behaves the same way or silently sandboxes is **Untested**, and testing it
 means creating a pin.
 
+## Probe e: does POST /pins work?
+
+Run after probe d. **It is blocked in production, and it fails loudly.**
+
+```json
+HTTP 403 {"code":29,"message":"Apps with Trial access may not create Pins in production
+https://api.pinterest.com - use API Sandbox https://api-sandbox.pinterest.com instead."}
+```
+
+This answers the open question left at the end of probe d. Pin creation does
+not silently sandbox. It is refused with a named reason, the same way
+`pin_edit` was, and no pin is created.
+
+It also disproves a claim carried over from upstream's `create_pin` docstring,
+that Pinterest has no sandbox environment. Pinterest's own error names the
+sandbox host, `https://api-sandbox.pinterest.com`.
+
+The two hosts are complementary, not interchangeable:
+
+| | Production | Sandbox |
+|---|---|---|
+| Reads | Real data | Isolated test data |
+| Board CRUD | Works | Works |
+| Pin CRUD | **Blocked under Trial** | Accepts writes |
+| Analytics | **Works** | `x-sandbox: disabled` |
+| Search | Works | `x-sandbox: disabled` |
+| Auth | OAuth token, 30 days | Separate token, 24 hours |
+
+The sandbox rejects production OAuth tokens outright (`401 code 2`), so it
+needs its own token issued from the app's Configure tab with the environment
+set to Sandbox.
+
+**Caveat on the sandbox column.** The 403 above and the `401 code 2` token
+rejection are real responses. The rest of the sandbox column is read from
+Pinterest's endpoint metadata, not from a successful sandbox call. **No
+sandbox call has ever succeeded against this app**, because no sandbox token
+was ever issued. `PinterestClient(sandbox=True)` is wired and unit-safe but
+**Untested end to end**.
+
+## Probe f: analytics re-verified
+
+Re-run 2026-09-07 as read-only calls over a 30-day window, 2026-08-08 to
+2026-09-07, to close the two rows probe c left Untested.
+
+`GET /user_account/analytics/top_pins`, sort_by `IMPRESSION`. **Works**, and
+returns real per-pin numbers:
+
+```json
+{"sort_by":"IMPRESSION","pins":[
+  {"pin_id":"1091067447264423486","metrics":{"IMPRESSION":129},"data_status":{"IMPRESSION":"READY"}},
+  {"pin_id":"1091067447264416042","metrics":{"IMPRESSION":51},"data_status":{"IMPRESSION":"READY"}}]}
+```
+
+This was expected to be inert under Trial. It is not. It is the most useful
+analytics call available today, because it names which specific pins earn
+impressions rather than only totalling them.
+
+`GET /pins/{id}/analytics`. **Works**, returns 30 daily rows plus summary
+metrics, every row `"data_status": "READY"`:
+
+```json
+{"all":{"summary_metrics":{"SAVE":0,"OUTBOUND_CLICK":0,"PIN_CLICK":0,"IMPRESSION":0},
+"daily_metrics":[{"date":"2026-08-08","data_status":"READY",
+"metrics":{"SAVE":0,"OUTBOUND_CLICK":0,"PIN_CLICK":0,"IMPRESSION":0}}, ...]}}
+```
+
+The zeros are a property of the pin sampled, which was created on 2026-09-07
+and so has no history in the window. The call itself succeeded and the data
+is `READY`, which is what was being tested. `top_pins` above shows non-zero
+impressions on older pins over the same window.
+
+Account state confirmed unchanged during this probe: `board_count: 8`,
+`pin_count: 27`.
+
 ## Revised summary
 
 | Operation | Trial status | Evidence |
@@ -138,17 +212,25 @@ means creating a pin.
 | Set board privacy PUBLIC | Works | probe d |
 | Set board privacy SECRET | Blocked, 403 | probe d, cause unproven |
 | Update pin | **Blocked**, restricted feature `pin_edit` | probe d |
-| Create pin | Untested | not attempted |
-| Delete pin | Untested | destructive, not attempted |
-| Pin analytics | Untested | not attempted |
+| Create pin (production) | **Blocked**, 403 code 29, names the sandbox host | probe e |
+| Create pin (sandbox host) | Untested, no sandbox token ever issued | probe e |
+| Delete pin | Untested | destructive, and Trial blocks making a throwaway pin |
+| Pin analytics | Works, real daily metrics, `data_status: READY` | probe f |
+| Top-pin analytics | Works, real per-pin impressions | probe f |
 
 After every probe the account was restored to its original state:
 8 boards, 27 pins.
 
 ## Still untested
 
-- Pin writes (`POST /pins`). Not attempted. Pinterest's sandbox warning is
-  specifically about created content, and the board result does not
-  generalise to pins without a test.
-- Pin analytics (`GET /pins/{id}/analytics`).
-- `GET /user_account/analytics/top_pins`.
+- **The sandbox host.** `PinterestClient(sandbox=True)` and
+  `PINTEREST_SANDBOX_TOKEN` are wired, but no sandbox token was ever issued,
+  so no sandbox call has ever succeeded. Everything in the sandbox column of
+  probe e except the two quoted error responses is read from endpoint
+  metadata, not from a call. Mark it Verified only after a real call.
+- **`DELETE /pins/{id}`.** Cannot be safely tested in production: the only
+  test destroys a real pin, and Trial blocks pin creation so no throwaway pin
+  can be made first. Test it against the sandbox once that host works.
+- **The cause of the `privacy=SECRET` 403.** Most likely the missing
+  `boards:write_secret` scope rather than a Trial limit. Confirming it costs a
+  full browser re-auth, and this account wants public boards anyway.

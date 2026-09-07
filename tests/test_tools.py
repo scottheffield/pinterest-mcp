@@ -1,6 +1,6 @@
 """Tests for pinterest-mcp tools.
 
-All HTTP calls are mocked — no real Pinterest traffic.
+All HTTP calls are mocked, no real Pinterest traffic.
 """
 
 from __future__ import annotations
