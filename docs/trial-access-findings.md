@@ -74,6 +74,77 @@ Trial.
 `ads:read` was granted to the Trial app, so the keyword endpoints are
 reachable. They return sparse data for this niche rather than failing.
 
+## Probe d: are UPDATES available during Trial?
+
+Probed 2026-09-07 after the create/delete probes. **Board updates work. Pin
+updates are hard-blocked.**
+
+### Board update: works
+
+On a throwaway board, `PATCH /boards/{id}`:
+
+| Field written | Result |
+|---|---|
+| `name` | OK, persisted |
+| `description` | OK, persisted |
+| `privacy` = `PUBLIC` | OK |
+| `privacy` = `SECRET` | **403** `{"code":29,"message":"You are not permitted to access that resource."}` |
+
+The rename reached the public profile. An unauthenticated fetch of
+`pinterest.com/TheHandyPages/` showed the new name and no trace of the old
+one, so board edits propagate publicly and are not sandboxed.
+
+Isolation of the 403: writing `privacy=PUBLIC` succeeded and a `name`-only
+write succeeded immediately after the failure, so the privacy field is
+writable and only the `SECRET` value is refused. The most likely cause is the
+missing `boards:write_secret` scope rather than a Trial restriction, but that
+is **unproven**; confirming it needs a re-auth with that scope added.
+
+**Practical effect: none for this account.** Boards promoting a public site
+should stay `PUBLIC`. Renaming boards and rewriting keyword-led descriptions,
+the immediate need, both work today.
+
+### Pin update: blocked, with an explicit error
+
+`PATCH /pins/{id}` was tested as a strict no-op, writing a pin's existing
+description back to itself, so no production content could change:
+
+```json
+HTTP 401 {"code":3,"message":"Your application does not have access to this restricted feature: pin_edit"}
+```
+
+A re-read confirmed the pin's title and description were untouched.
+
+This matters beyond the one endpoint. The scope granted includes `pins:write`,
+so this is **not** a scope problem: it is a Trial-versus-Standard feature gate,
+named explicitly as `pin_edit`. Pinterest returned a hard, named error rather
+than silently accepting the write.
+
+That partially reframes the documented "Sandbox entities" risk. For pin
+editing, at least, the failure is loud, not silent. Whether `POST /pins`
+behaves the same way or silently sandboxes is **Untested**, and testing it
+means creating a pin.
+
+## Revised summary
+
+| Operation | Trial status | Evidence |
+|---|---|---|
+| Read account, boards, pins | Works, real production data | probe a |
+| Account analytics | Works, real metrics | probe c |
+| Create board | Works, publicly visible | probe b |
+| Delete board | Works | probe b |
+| Update board name | Works, propagates publicly | probe d |
+| Update board description | Works | probe d |
+| Set board privacy PUBLIC | Works | probe d |
+| Set board privacy SECRET | Blocked, 403 | probe d, cause unproven |
+| Update pin | **Blocked**, restricted feature `pin_edit` | probe d |
+| Create pin | Untested | not attempted |
+| Delete pin | Untested | destructive, not attempted |
+| Pin analytics | Untested | not attempted |
+
+After every probe the account was restored to its original state:
+8 boards, 27 pins.
+
 ## Still untested
 
 - Pin writes (`POST /pins`). Not attempted. Pinterest's sandbox warning is
