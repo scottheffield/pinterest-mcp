@@ -29,6 +29,24 @@ from .config import (
 
 logger = logging.getLogger(__name__)
 
+
+class PinterestAPIError(RuntimeError):
+    """A Pinterest API call returned an error status.
+
+    httpx's raise_for_status() discards the response body, but Pinterest puts
+    the useful part there (``code`` and ``message``). Under Trial access the
+    body is often the only signal explaining why a call was rejected, so it is
+    preserved here.
+    """
+
+    def __init__(self, status_code: int, method: str, path: str, body: str) -> None:
+        self.status_code = status_code
+        self.method = method
+        self.path = path
+        self.body = body
+        super().__init__(f"HTTP {status_code} on {method} {path}: {body}")
+
+
 # Rate limit: 10 pins/minute
 _PIN_RATE_LIMIT = 10
 _PIN_RATE_WINDOW = 60.0
@@ -157,8 +175,9 @@ class PinterestClient:
             headers={"Authorization": f"Bearer {token}"},
             **kwargs,
         )
-        resp.raise_for_status()
-        if resp.status_code == 204:
+        if resp.status_code >= 400:
+            raise PinterestAPIError(resp.status_code, method, path, resp.text)
+        if resp.status_code == 204 or not resp.content:
             return {}
         return resp.json()
 
