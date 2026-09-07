@@ -44,12 +44,28 @@ async def list_tools() -> list[types.Tool]:
                 "properties": {
                     "board_id": {"type": "string", "description": "Target board ID"},
                     "title": {"type": "string", "description": "Pin title"},
-                    "description": {"type": "string", "description": "Pin description (include keywords)"},
-                    "image_url": {"type": "string", "description": "Publicly accessible image URL (mutually exclusive with image_path)"},
-                    "image_path": {"type": "string", "description": "Absolute local path to JPEG/PNG image (mutually exclusive with image_url)"},
-                    "link": {"type": "string", "description": "Destination URL (e.g. Cults3D listing)"},
+                    "description": {
+                        "type": "string",
+                        "description": "Pin description (include keywords)",
+                    },
+                    "image_url": {
+                        "type": "string",
+                        "description": "Publicly accessible image URL (mutually exclusive with image_path)",
+                    },
+                    "image_path": {
+                        "type": "string",
+                        "description": "Absolute local path to JPEG/PNG image (mutually exclusive with image_url)",
+                    },
+                    "link": {
+                        "type": "string",
+                        "description": "Destination URL (e.g. Cults3D listing)",
+                    },
                     "alt_text": {"type": "string", "description": "Alt text for accessibility"},
-                    "dry_run": {"type": "boolean", "description": "If true, validate and return payload without posting. Pinterest has no sandbox — use this for testing.", "default": False},
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "If true, validate and return payload without posting. Pinterest has no sandbox — use this for testing.",
+                        "default": False,
+                    },
                 },
                 "required": ["board_id", "title", "description"],
                 "oneOf": [
@@ -122,7 +138,11 @@ async def list_tools() -> list[types.Tool]:
                 "properties": {
                     "name": {"type": "string"},
                     "description": {"type": "string"},
-                    "privacy": {"type": "string", "enum": ["PUBLIC", "SECRET"], "default": "PUBLIC"},
+                    "privacy": {
+                        "type": "string",
+                        "enum": ["PUBLIC", "SECRET"],
+                        "default": "PUBLIC",
+                    },
                 },
                 "required": ["name"],
             },
@@ -171,7 +191,11 @@ async def list_tools() -> list[types.Tool]:
                 "type": "object",
                 "properties": {
                     "board_id": {"type": "string"},
-                    "dry_run": {"type": "boolean", "description": "Validate all pins without posting. Pinterest has no sandbox — use this for testing.", "default": False},
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Validate all pins without posting. Pinterest has no sandbox — use this for testing.",
+                        "default": False,
+                    },
                     "pins": {
                         "type": "array",
                         "items": {
@@ -180,7 +204,10 @@ async def list_tools() -> list[types.Tool]:
                                 "title": {"type": "string"},
                                 "description": {"type": "string"},
                                 "image_url": {"type": "string", "description": "Remote image URL"},
-                                "image_path": {"type": "string", "description": "Local image file path"},
+                                "image_path": {
+                                    "type": "string",
+                                    "description": "Local image file path",
+                                },
                                 "link": {"type": "string"},
                                 "alt_text": {"type": "string"},
                             },
@@ -197,12 +224,54 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="get_trending",
-            description="Get trending searches and topics in a Pinterest interest category.",
+            description=(
+                "List top trending keywords for a region. Scope: user_accounts:read. "
+                "trend_type is one of growing, monthly, yearly, seasonal. "
+                "Trial access: UNTESTED."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "interest": {"type": "string", "default": "miniatures"},
-                    "region": {"type": "string", "default": "US"},
+                    "region": {
+                        "type": "string",
+                        "default": "US",
+                        "enum": [
+                            "US",
+                            "CA",
+                            "DE",
+                            "FR",
+                            "ES",
+                            "IT",
+                            "DE+AT+CH",
+                            "GB+IE",
+                            "IT+ES+PT+GR+MT",
+                            "PL+RO+HU+SK+CZ",
+                            "SE+DK+FI+NO",
+                            "NL+BE+LU",
+                            "AR",
+                            "BR",
+                            "CO",
+                            "MX",
+                            "MX+AR+CO+CL",
+                            "AU+NZ",
+                        ],
+                    },
+                    "trend_type": {
+                        "type": "string",
+                        "default": "growing",
+                        "enum": ["growing", "monthly", "yearly", "seasonal"],
+                    },
+                    "interests": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional interest category filter",
+                    },
+                    "include_keywords": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Only return trends containing these keywords",
+                    },
+                    "limit": {"type": "integer", "default": 50},
                 },
             },
         ),
@@ -247,8 +316,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextCont
             )
         elif name == "get_trending":
             result = await client.get_trending(
-                interest=arguments.get("interest", "miniatures"),
                 region=arguments.get("region", "US"),
+                trend_type=arguments.get("trend_type", "growing"),
+                interests=arguments.get("interests"),
+                include_keywords=arguments.get("include_keywords"),
+                limit=arguments.get("limit", 50),
             )
         else:
             raise ValueError(f"Unknown tool: {name}")

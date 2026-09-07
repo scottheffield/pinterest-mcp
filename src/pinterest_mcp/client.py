@@ -17,11 +17,17 @@ from typing import Any
 
 import httpx
 
-logger = logging.getLogger(__name__)
+from .config import (
+    PINTEREST_BASE,
+    REFRESH_WARN_DAYS,
+    TOKEN_FILE,
+    ensure_token_dir,
+)
+from .config import (
+    PINTEREST_TOKEN_URL as PINTEREST_AUTH,
+)
 
-PINTEREST_BASE = "https://api.pinterest.com/v5"
-PINTEREST_AUTH = "https://api.pinterest.com/v5/oauth/token"
-TOKEN_FILE = Path(".pinterest_token.json")
+logger = logging.getLogger(__name__)
 
 # Rate limit: 10 pins/minute
 _PIN_RATE_LIMIT = 10
@@ -43,6 +49,7 @@ class PinterestClient:
         self._access_token = access_token or os.environ.get("PINTEREST_ACCESS_TOKEN")
         self._refresh_token = refresh_token or os.environ.get("PINTEREST_REFRESH_TOKEN")
         self._token_expiry: float = 0
+        self._refresh_token_expiry: float | None = None
         self._pin_timestamps: list[float] = []
         self._http = httpx.AsyncClient(
             timeout=30.0,
@@ -59,17 +66,53 @@ class PinterestClient:
             self._access_token = data.get("access_token")
             self._refresh_token = data.get("refresh_token")
             self._token_expiry = data.get("expiry", 0)
+            self._refresh_token_expiry = data.get("refresh_token_expiry")
             logger.info("Loaded Pinterest token from %s", TOKEN_FILE)
-        except Exception as e:
+            self._warn_if_refresh_window_closing()
+        except Exception as e:  # noqa: BLE001 - a bad token file must not crash startup
             logger.warning("Could not load token file: %s", e)
 
+    def _warn_if_refresh_window_closing(self) -> None:
+        """Warn when the 60-day continuous refresh window is nearly closed.
+
+        Pinterest refresh tokens rotate on every use and stay valid
+        indefinitely only if used inside the window. Once it closes, the only
+        recovery is a full browser OAuth run.
+        """
+        if not self._refresh_token_expiry:
+            logger.warning(
+                "Token file has no refresh_token_expiry recorded. The 60-day "
+                "refresh window cannot be tracked. Re-run pinterest-mcp-auth "
+                "to record it."
+            )
+            return
+        days_left = (self._refresh_token_expiry - time.time()) / 86400
+        if days_left <= 0:
+            logger.error(
+                "Pinterest refresh token EXPIRED %.0f days ago. Run "
+                "pinterest-mcp-auth to re-authorize.",
+                -days_left,
+            )
+        elif days_left < REFRESH_WARN_DAYS:
+            logger.warning(
+                "Pinterest refresh token expires in %.0f days. Run "
+                "pinterest-mcp-auth before then or access is lost.",
+                days_left,
+            )
+
     def _save_token_file(self) -> None:
-        TOKEN_FILE.write_text(
-            json.dumps({
-                "access_token": self._access_token,
-                "refresh_token": self._refresh_token,
-                "expiry": self._token_expiry,
-            })
+        path = ensure_token_dir()
+        path.write_text(
+            json.dumps(
+                {
+                    "access_token": self._access_token,
+                    "refresh_token": self._refresh_token,
+                    "expiry": self._token_expiry,
+                    "refresh_token_expiry": self._refresh_token_expiry,
+                    "updated_at": time.time(),
+                },
+                indent=2,
+            )
         )
 
     async def _ensure_token(self) -> str:
@@ -78,9 +121,7 @@ class PinterestClient:
         if self._refresh_token:
             await self._refresh()
             return self._access_token  # type: ignore[return-value]
-        raise RuntimeError(
-            "No Pinterest access token. Run `pinterest-mcp-auth` to authenticate."
-        )
+        raise RuntimeError("No Pinterest access token. Run `pinterest-mcp-auth` to authenticate.")
 
     async def _refresh(self) -> None:
         resp = await self._http.post(
@@ -95,9 +136,13 @@ class PinterestClient:
         data = resp.json()
         self._access_token = data["access_token"]
         self._refresh_token = data.get("refresh_token", self._refresh_token)
-        self._token_expiry = time.time() + data.get("expires_in", 3600)
+        now = time.time()
+        self._token_expiry = now + data.get("expires_in", 3600)
+        if data.get("refresh_token_expires_in") is not None:
+            self._refresh_token_expiry = now + data["refresh_token_expires_in"]
         self._save_token_file()
         logger.info("Pinterest token refreshed")
+        self._warn_if_refresh_window_closing()
 
     async def _request(
         self,
@@ -278,9 +323,7 @@ class PinterestClient:
             json={"name": name, "description": description, "privacy": privacy},
         )
 
-    async def get_board_pins(
-        self, board_id: str, page_size: int = 25
-    ) -> list[dict[str, Any]]:
+    async def get_board_pins(self, board_id: str, page_size: int = 25) -> list[dict[str, Any]]:
         data = await self._request(
             "GET", f"/boards/{board_id}/pins", params={"page_size": page_size}
         )
@@ -290,9 +333,7 @@ class PinterestClient:
     # Search
     # ------------------------------------------------------------------
 
-    async def search_pins(
-        self, query: str, page_size: int = 25
-    ) -> list[dict[str, Any]]:
+    async def search_pins(self, query: str, page_size: int = 25) -> list[dict[str, Any]]:
         data = await self._request(
             "GET",
             "/search/pins",
@@ -324,13 +365,37 @@ class PinterestClient:
 
     async def get_trending(
         self,
-        interest: str = "miniatures",
         region: str = "US",
+        trend_type: str = "growing",
+        interests: list[str] | None = None,
+        include_keywords: list[str] | None = None,
+        limit: int = 50,
     ) -> dict[str, Any]:
+        """List top trending keywords for a region.
+
+        Endpoint: GET /trends/keywords/{region}/top/{trend_type}
+        Scope: user_accounts:read
+
+        Upstream called ``GET /trends/keywords`` with ``interests`` and
+        ``region`` as query parameters. That path does not exist in the v5
+        spec, so the upstream version returned 404. Region and trend type are
+        path segments.
+
+        ``trend_type`` is one of: growing, monthly, yearly, seasonal.
+
+        Under Trial access: UNTESTED. This reads Pinterest-wide trend data
+        rather than account-owned objects, so sandboxing of the caller's own
+        content should not apply, but that has not been confirmed by a call.
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if interests:
+            params["interests"] = interests
+        if include_keywords:
+            params["include_keywords"] = include_keywords
         return await self._request(
             "GET",
-            "/trends/keywords",
-            params={"interests": interest, "region": region},
+            f"/trends/keywords/{region}/top/{trend_type}",
+            params=params,
         )
 
     async def aclose(self) -> None:

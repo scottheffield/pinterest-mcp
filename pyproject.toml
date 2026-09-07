@@ -18,7 +18,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "mcp>=1.0.0",
+    # mcp 2.x removed the @server.list_tools() decorator API this server is
+    # built on. Pinning until the server is ported to the 2.x surface.
+    "mcp>=1.0.0,<2",
     "httpx>=0.27.0",
     "python-dotenv>=1.0.0",
     "anyio>=4.0.0",

@@ -9,3 +9,11 @@ venv/
 .pinterest_token.json
 .pytest_cache/
 .ruff_cache/
+
+# OAuth credentials. The live token now lives at
+# ~/.config/pinterest/token.json, outside this repo. These patterns stay as a
+# backstop in case anyone points PINTEREST_TOKEN_FILE back into the tree.
+token.json
+*.token.json
+.pinterest_token.json
+.env.local
