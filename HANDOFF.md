@@ -163,8 +163,28 @@ verified by code and test but has not actually executed here**.
 
 ## Open items, in priority order
 
-1. **Push the branch and open a PR.** Not done, deliberately, since nothing was
-   pushed without asking.
+1. **Open the PR. This is the next action.** The branch IS pushed:
+   `origin/phase-0-trial-fixes` at `6ad87f6`, working tree clean, main
+   untouched.
+
+   The PR is not open yet. `gh pr create` is blocked by a pre-PR hook
+   (`dev-team` plugin, `pre_pr_review.py`) that requires a fresh `/code-review`
+   after the most recent commits. A review was run and all nine of its findings
+   were fixed in `6ad87f6`, but the gate has not seen a run since. To finish:
+
+   ```
+   /code-review main
+   gh pr create --repo scottheffield/pinterest-mcp --base main      --head phase-0-trial-fixes --title "..." --body-file <file>
+   ```
+
+   Two gotchas. **`--repo` is required**: this is a fork, so `gh` otherwise
+   targets the upstream `clugtu/pinterest-mcp` and fails with "No commits
+   between main and phase-0-trial-fixes". And the drafted PR body was written
+   to a temp file that will not survive; it is reconstructible from the commit
+   messages, which carry the same content.
+
+   To bypass the gate instead, set `PR_GATE_BYPASS_REASON` to a non-empty
+   reason.
 
 2. **`delete_pin` is untested and cannot be safely tested in production.** Trial
    blocks pin creation, so no throwaway pin can be made, and the only production
