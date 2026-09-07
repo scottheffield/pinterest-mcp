@@ -60,7 +60,7 @@ class PinterestClient:
             self._refresh_token = data.get("refresh_token")
             self._token_expiry = data.get("expiry", 0)
             logger.info("Loaded Pinterest token from %s", TOKEN_FILE)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning("Could not load token file: %s", e)
 
     def _save_token_file(self) -> None:
