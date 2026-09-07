@@ -8,7 +8,14 @@ under Trial access?**
 
 Every status in this README came from a real call against a real Pinterest
 Business account on 2026-09-07. Nothing is marked working because the code looks
-right. Full transcripts are in [docs/trial-access-findings.md](docs/trial-access-findings.md).
+right. Full transcripts, with raw request and response bodies, are in
+[docs/trial-access-findings.md](docs/trial-access-findings.md).
+
+**The sample is one account.** A single small Business account with Trial
+access, 8 boards and 27 pins. Access tiers, granted scopes and account type all
+change what Pinterest allows, so treat this as a worked example with its
+evidence attached rather than as a specification. Where a result probably turns
+on this account's particulars, the text says so.
 
 ---
 
@@ -121,6 +128,11 @@ names which specific pins earn impressions.
 Both need the `ads:read` scope. They do not error, they just return very little.
 An unhelpful result is normal here, not a bug. `get_trending` is the more useful
 keyword tool.
+
+The seeds tested were all in one niche (printables: calendars, chore charts,
+graph paper). Whether these endpoints are thin in general or thin for this
+subject matter is **not established**. Try your own seeds before concluding
+they are useless.
 
 ### Pin writes: blocked under Trial
 
@@ -238,8 +250,9 @@ browser re-auth, which is why the client warns at 14 days.
 
 ## Setup
 
-Requires Python 3.11+. The system Python on the dev machine is 3.10, so use
-[uv](https://docs.astral.sh/uv/); plain `pip install` will refuse.
+Requires **Python 3.11 or newer**. If your system Python is older, `pip
+install` will refuse; [uv](https://docs.astral.sh/uv/) fetches a suitable
+interpreter for you, which is why it is the documented path here.
 
 ```bash
 git clone https://github.com/scottheffield/pinterest-mcp
@@ -248,6 +261,11 @@ uv venv --python 3.12
 uv pip install -e ".[dev]"
 cp .env.template .env      # then fill in client ID and secret
 ```
+
+You need a Pinterest app of your own, from the
+[developer console](https://developers.pinterest.com/apps/). Put its client ID
+and secret in `.env`. The app starts on Trial access, which is what this README
+documents.
 
 Register this redirect URI in your Pinterest app settings, character for
 character, port included:
@@ -264,6 +282,22 @@ pinterest-mcp-auth
 
 ### MCP client config
 
+Point the command at the console script inside the venv you just created.
+
+macOS and Linux:
+
+```json
+{
+  "mcpServers": {
+    "pinterest": {
+      "command": "/path/to/pinterest-mcp/.venv/bin/pinterest-mcp"
+    }
+  }
+}
+```
+
+Windows:
+
 ```json
 {
   "mcpServers": {
@@ -275,7 +309,8 @@ pinterest-mcp-auth
 ```
 
 Credentials come from `.env` and the token file, so they do not belong in this
-config.
+config. Upstream's README put the access token in this block as an environment
+variable; do not do that.
 
 ---
 

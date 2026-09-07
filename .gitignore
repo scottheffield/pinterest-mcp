@@ -17,3 +17,6 @@ token.json
 *.token.json
 .pinterest_token.json
 .env.local
+
+# Claude Code plugin telemetry, not project code
+.claude/metrics/
